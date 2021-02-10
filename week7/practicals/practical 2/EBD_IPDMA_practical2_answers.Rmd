@@ -1,0 +1,389 @@
+---
+title: "IPD-MA Computer Practical 2"
+subtitle: "Epidemiology & Big Data"
+author: "Thomas Debray and Valentijn de Jong"
+output:
+  html_document:
+    toc: yes
+    toc_float: true
+    toc_depth: 4
+    code_folding: hide
+bibliography: bibliography.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+show.answers <- T ## used in chuncks by means of include = show.answers
+show.text = T #show answers?
+
+counter <- function(x = 0, series = NULL) {
+  function(add = T) {
+    if (isTRUE(add)) x <<- x + 1
+    if (is.null(series)) x else series[x]
+  }
+}
+
+qc <- counter()
+mc <- counter(series = LETTERS)
+```
+
+## Introduction
+
+In 2006, @rovers_antibiotics_2006 performed an individual participant data meta-analysis (IPD-MA) of six randomized trials of the effects of antibiotics in children with acute otitis media. Their aim was to identify subgroups of children who would and would not benefit more than others from treatment with antibiotics. The primary outcome as an extended course of acute otitis media (AOM), which was defined as pain, fever, or both at 3-7 days. In this practical, you will re-analyze an artificial version of the IPD-MA from @rovers_antibiotics_2006.
+
+### General aim
+Your aim is to estimate the effect of antibiotics in children with AOM, and to assess whether it is modified by age or bilateral acute otitis media. In this practical, you will perform one-stage meta-analyses whilst evaluating different assumptions.
+
+This practical was developed using R version `r getRversion()`. Open RStudio and verify if your installed version is up-to-date:
+
+```{r,message=F,warning=F,echo=T,eval=F}
+R.Version()$version.string
+```
+
+If the correct version of R is installed, proceed by installing the packages if you have not already done so: [metafor](https://CRAN.R-project.org/package=metafor) and [lme4](https://CRAN.R-project.org/package=lme4). In recent versions of R, the installation of packages frequently fails when some packages have already been loaded. Therefore, unless you have just booted R, it is best to always restart your R session (ctrl + shift + F10 on Windows,  cmd + shift + F10 on Mac, or navigate to Session, then Restart R). Restarting R this way unloads all packages and functions, but retains all data and variables.
+
+```{r,message=F,warning=F,echo=T,eval=F}
+install.packages("metafor")
+install.packages("lme4")
+install.packages("logistf")
+```
+
+If you have a more recent version of R, it is possible that aforementioned packages can not (yet) be installed. For this reason, carefully verify if installation was successful. Afterwards, the packages can be loaded as follows:
+
+```{r,message=F,warning=F}
+library("metafor")
+library("lme4")
+library("logistf")
+```
+
+Download the practical dataset `AOM.Rdata` and open it in `R`:
+
+```{r,message=F,warning=F, eval=F}
+load(choose.files())
+```
+
+```{r,message=F,warning=F, eval=T, echo=F}
+load("AOM.RData")
+```
+
+The practical dataset is the same as in practical 1 of the IPDMA part and contains information on `r nrow(ds.final)` children aged from 6 months to 12 years. 
+
+```{r kableOS, echo=F, warning=F}
+library(knitr)
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+fit.adj1 <- glm(POUTCOME ~ TREAT + AGE + GENDER + BILAT_0, 
+                data = ds.final, 
+                family = binomial(link = "log"), 
+                subset = STUDY==1)
+exp(c(coefficients(fit.adj1)["TREAT"], confint(fit.adj1, "TREAT")))
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+studies <- sort(unique(ds.final$STUDY))
+ad.results <- data.frame(logRR=NULL, logRR.se=NULL)
+
+for (i in 1:length(studies)) {
+  fit <- glm(POUTCOME ~ TREAT + AGE + GENDER + BILAT_0, 
+             data = ds.final, 
+             family = binomial(link="log"), 
+             subset = STUDY==studies[i])
+  ad.results[i, "logRR"] <- coefficients(fit)["TREAT"]
+  ad.results[i, "logRR.se"] <- sqrt(vcov(fit)["TREAT","TREAT"])
+}
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+fe.2stage <- rma(yi = logRR, sei = logRR.se, method = "FE", data = ad.results)
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+re.2stage <- rma(yi = logRR, sei = logRR.se, method = "REML", data = ad.results)
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+re.2stage.knha <- rma(yi = logRR, sei = logRR.se, method = "REML", test = "knha", 
+                      data = ad.results)
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include = F}
+level <- 0.05
+crit <- qt(c(level/2, 1-(level/2)), df = (re.2stage.knha$k-2))
+mu <- re.2stage.knha$b[[1]]
+tau2 <- re.2stage.knha$tau2
+sigma2 <- vcov(re.2stage.knha)
+mu + crit * c(sqrt(tau2 + sigma2))
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include = F}
+results.te <- data.frame(Method = c("Two-stage meta-analysis", "One-stage meta-analysis", "One-stage meta-analysis", "One-stage meta-analysis"), 
+                         "Baseline risk" = c("fixed", "common", "fixed", "fixed"),
+                         "Treatment effect" = c("random", "common", "common", "random"),
+                      "Relative Risk" = NA, 
+                      "95% CI" = NA, 
+                      "95% PI" = NA)
+colnames(results.te)[2:6] <- c("Baseline Risk", "Treatment effect", "Relative Risk", "95% CI", "95% PI")
+results.te[1, 4] <- sprintf("%.3f", predict(re.2stage.knha, transf=exp)$pred)
+results.te[1, 5] <- paste(sprintf("%.3f", predict(re.2stage.knha, transf=exp)$ci.lb), "; ", sprintf("%.3f", predict(re.2stage.knha, transf=exp)$ci.ub), sep="")
+results.te[1, 6] <- paste(sprintf("%.3f", exp(mu + crit[1] * c(sqrt(tau2 + sigma2)))), "; ", sprintf("%.3f", exp(mu + crit[2] * c(sqrt(tau2 + sigma2)))), sep="")
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include=F}
+mean.age <- mean.bilat_0 <- array(NA, dim=length(studies))
+for (i in 1:length(studies)) {
+  mean.age[i] <- mean(ds.final[ds.final$STUDY==studies[i], "AGE"])
+  mean.bilat_0[i] <- mean(ds.final[ds.final$STUDY==studies[i], "BILAT_0"])
+}
+ad.results <- cbind(ad.results, mean.age, mean.bilat_0)
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include = F}
+remr.bilat0 <- rma(yi = logRR, sei = logRR.se, mods = mean.bilat_0, 
+                   method = "REML", test = "knha", data = ad.results)
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include = F}
+results.em <- data.frame(Method = c("Meta-regression", "Pooling of within-trial covariate interactions", "Combined estimation of across-trial and within-trial interactions", "Separation of interaction terms (common treatment effect)", "Separation of interaction terms (random treatment effects)"), 
+                      Approach = c("2-stage", "2-stage", "1-stage", "1-stage", "1-stage"), 
+                      "InteractionEffect" = NA, 
+                      "Pvalue" = NA)
+colnames(results.em)[3:4] <- c("Interaction Effect", "P value")
+results.em[1, 3] <- coef(remr.bilat0)[2]
+results.em[1, 4] <- remr.bilat0$pval[2]
+
+remr.age<- rma(logRR, sei = logRR.se, mods = mean.age, method = "REML", test = "knha", data = ad.results)
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include = F}
+### calculate predicted RR for mean participant age 0 to 100
+preds <- predict(remr.bilat0, newmods=seq(0, 1, 0.01), transf=exp)
+ 
+### calculate point sizes by rescaling the standard errors
+wi    <- 1/sqrt(ad.results$logRR.se)
+size  <- 0.5 + 3.0 * (wi - min(wi))/(max(wi) - min(wi))
+```
+
+```{r, warning=F, message=F, include=F, echo =F} 
+ad2.results <- data.frame(logRR = NULL, logRR.se = NULL, 
+                          beta.int = NULL, beta.int.se = NULL)
+
+for (i in 1:length(studies)) {
+  fit <- glm(POUTCOME ~ TREAT + AGE + GENDER + BILAT_0 + TREAT:BILAT_0, 
+             data = ds.final, 
+             family = binomial(link="log"), 
+             subset = STUDY==studies[i])
+  ad2.results[i, "logRR"] <- coefficients(fit)["TREAT"]
+  ad2.results[i, "logRR.se"] <- sqrt(vcov(fit)["TREAT","TREAT"])
+  ad2.results[i, "beta.int"] <- coefficients(fit)["TREAT:BILAT_0"]
+  ad2.results[i, "beta.int.se"] <- sqrt(vcov(fit)["TREAT:BILAT_0","TREAT:BILAT_0"])
+}
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+library(logistf)
+
+ds.study3 <- subset(ds.final, STUDY==studies[3])
+fit <- logistf(POUTCOME ~ TREAT + AGE + GENDER + BILAT_0 + TREAT:BILAT_0, 
+               data = ds.study3)
+index1 <- which(names(coefficients(fit))=="TREAT")
+index2 <- which(names(coefficients(fit))=="TREAT:BILAT_0")
+
+ad2.results[3, "logRR"] <- coefficients(fit)[index1]
+ad2.results[3, "logRR.se"] <- sqrt(vcov(fit)[index1, index1])
+ad2.results[3, "beta.int"] <- coefficients(fit)[index2]
+ad2.results[3, "beta.int.se"] <- sqrt(vcov(fit)[index2, index2])
+```
+
+```{r, warning=F, message=F, echo = F, include = F} 
+repwt.bilat0  <- rma(yi = beta.int, sei = beta.int.se, 
+                     method = "REML", 
+                     test="knha", 
+                     data = ad2.results)
+```
+
+```{r,message=F,warning=F,echo=F,eval=T, include = F}
+results.em[2, 3] <- repwt.bilat0$b
+results.em[2, 4] <- repwt.bilat0$pval
+```
+
+## One-stage meta-analysis
+
+### Investigating overall treatment effect
+We will start by summarizing the overall treatment effect of antibiotics. 
+
+#### Common treatment effect, common baseline risk
+The simplest one-stage meta-analysis model can be implemented by fitting a regression model on the combined IPD data. It is then assumed that all trials have the same baseline risk, the same treatment effect, and the same covariate effects:
+
+```{r,message=F,warning=F,echo=T,eval=T}
+fit1 <- glm(POUTCOME ~ TREAT + AGE + GENDER + BILAT_0, 
+            data = ds.final, 
+            family = binomial(link="log"))
+summary(fit1)
+```
+
+**Question `r qc()`.** What are the potential dangers of aformentioned meta-analysis approach?
+
+`r if(show.text){paste("*Answer: Any heterogeneity between trials is completely ignored. As a result, summary estimates for the relative treatment effect may become biased, with standard errors that are too small. Additional bias may appear because the covariate effects are assumed to be identical for all trials.*", sep="")}`
+
+```{r,message=F,warning=F,echo=F,eval=T}
+fit1.ci <- confint(fit1, parm="TREAT", method="Wald")
+results.te[2, 4] <- sprintf("%.3f", exp(coefficients(fit1)["TREAT"]))
+results.te[2, 5] <- paste(sprintf("%.3f", exp(fit1.ci[1])), "; ", sprintf("%.3f", exp(fit1.ci[2])), sep="")
+results.te[2, 6] <- "Undefined"
+
+kable(results.te[1:2,])
+```
+#### Common treatment effect, fixed baseline risks
+We can improve the validity of aforementioned meta-analysis model by allowing trials to have a different (so-called "fixed") baseline risk, and a different effect for each of the adjustment factors. We then have 6 intercept terms (i.e. one for each trial), 6 regression coefficients for `AGE`, 6 regression coefficients for `GENDER`, 6 regression coefficients for `BILAT_0` and 1 regression coefficient for `TREAT`.
+
+```{r,message=F,warning=F,echo=T,eval=T}
+ds.final$SID <- as.factor(ds.final$STUDY)
+fit2 <- glm(POUTCOME ~ 0 + SID + TREAT + AGE:SID + GENDER:SID + BILAT_0:SID, 
+            data = ds.final, 
+            family = binomial(link="log"))
+summary(fit2)
+```
+
+An overview of the estimated treatment effects is given below:
+
+```{r,message=F,warning=F,echo=F,eval=T}
+fit2.ci <- confint(fit2, parm="TREAT", method="Wald")
+results.te[3, 4] <- sprintf("%.3f", exp(coefficients(fit2)["TREAT"]))
+results.te[3, 5] <- paste(sprintf("%.3f", exp(fit2.ci[1])), "; ", sprintf("%.3f", exp(fit2.ci[2])), sep="")
+results.te[3, 6] <- "Undefined"
+
+kable(results.te[1:3,])
+```
+
+#### Random treatment effect, fixed baseline risks
+Finally, we can allow for between-study heterogeneity in the relative treatment effect by adopting a mixed effects model. We then have fixed effects for the baseline risk and adjustment factors, and a random effect for treatment:
+
+```{r,message=F,warning=F,echo=T,eval=T}
+fit3 <- glmer(POUTCOME ~ 0 + SID + TREAT + (0 + TREAT|SID) + 
+                AGE:SID + GENDER:SID + BILAT_0:SID, 
+              data = ds.final, 
+              family = binomial(link="log"))
+summary(fit3)
+```
+
+In the model above, the term `(0 + TREAT|SID)` indicates that only treatment effects should vary across study (defined by `SID`). The term 0 ensures that no random effects are added for the intercept term (since we estimate a separate intercept term for each study). The estimated treatment effect is then given by the coefficient for `TREAT`, and the between-study standard deviation is described by Std.Dev. for the group  `SID`.
+
+An overview of the estimated treatment effects is given below:
+
+```{r,message=F,warning=F,echo=F,eval=T}
+level <- 0.05
+crit <- qt(c(level/2, 1-(level/2)), df = 4)
+mu <- fixef(fit3)["TREAT"]
+tau2 <- as.numeric(attributes(VarCorr(fit3)$SID)$stddev)**2
+sigma2 <- vcov(fit3)["TREAT", "TREAT"]
+
+
+fit3.ci <- confint(fit3, parm="TREAT", method="Wald")
+fit3.pi <- mu + crit * c(sqrt(tau2 + sigma2))
+results.te[4, 4] <- sprintf("%.3f", exp(fixef(fit3)["TREAT"]))
+results.te[4, 5] <- paste(sprintf("%.3f", exp(fit3.ci[1])), "; ", sprintf("%.3f", exp(fit3.ci[2])), sep="")
+results.te[4, 6] <- paste(sprintf("%.3f", exp(fit3.pi[1])), "; ", sprintf("%.3f", exp(fit3.pi[2])), sep="")
+
+kable(results.te[1:4,])
+```
+
+**Question `r qc()`.**  Discuss whether you would apply a one-stage or two-stage model and why.
+
+`r if(show.text){paste("*Answer: The one-stage meta-analysis models are in some cases preferred, as they can avoid small sample bias whilst allowing for the potential presence of between-study heterogeneity. Though, provided that the sample size of each trial is sufficient, the two-stage analysis will be adequate as well. In fact, when all assumptions for both methods are met and the data set is of sufficient size, they may provide nearly the same results. Whether they provide similar results depends largely on the model you specify for each analysis..*", sep="")}`
+
+**Question `r qc()`.**  Discuss which meta-analysis estimate you would communicate as primary result and why.
+
+`r if(show.text){paste("*Answer: Here, we found that modeling heterogeneity in treatment effect was not necessary, as the estimated between-study standard deviation was zero. The one-stage model assuming a common treatment effect and fixed baseline risks across studies therefore appears most appropriate. This model yielded an AIC of 1980, which is slightly smaller than the AIC of the model assuming random treatment effects (1982).*", sep="")}`
+
+### Investigating effect modifiers
+In this section we will explore whether the efficacy of antibiotics is modified by BILAT_0. We will build upon the previous section, and assume a common treatment effect across studies for sake of simplicity.
+
+#### Merging within-study and across-study interactions
+A simple, but potentially naive, model that ignores any residual between-study heterogeneity and amalgamates within-trial and across-trial interactions can be executed as follows, as described by @hua_one-stage_2016:
+
+```{r}
+fit2a.em <- glm(POUTCOME ~ 0 + SID + AGE:SID + GENDER:SID + BILAT_0:SID + BILAT_0*TREAT, 
+               data = ds.final, 
+               family = binomial(link="log"))
+summary(fit2a.em)
+```
+
+The treatment-covariate interaction term is then given by the regression coefficient for `BILAT_0:TREAT`. The corresponding results are depicted below:
+
+```{r,message=F,warning=F,echo=F,eval=T}
+results.em[3, 3] <- coefficients(fit2a.em)["BILAT_0:TREAT"]
+results.em[3, 4] <- 2 * (1 - pnorm(abs(coefficients(fit2a.em)["BILAT_0:TREAT"] /sqrt(diag(vcov(fit2a.em))["BILAT_0:TREAT"]) )))
+kable(results.em[1:3,])
+```
+
+As described by @hua_one-stage_2016 aforementioned meta-analysis model amalgamates within- and across-trial interactions, and is therefore prone to ecological bias.
+
+#### Separating within-study and across-study interactions
+We can model the within-study and across-study interactions separately by centring the covariate `BILAT_0` about the mean in each trial and also including the mean (i.e. the prevalence of bilateral AOM in each trial) as an additional adjustment term to explain between-study heterogeneity.
+
+```{r}
+ds.final$MEAN_BILAT_0 <- ds.final$C_BILAT_0 <- NA
+
+for (i in 1:length(studies)) {
+  sel.pats <- which(ds.final$STUDY==studies[i])
+  
+  # Calculate prevalence of BILAT_0 in each trial
+  ds.final$MEAN_BILAT_0[sel.pats] <- mean(ds.final$BILAT_0[sel.pats])
+  
+  # Center the covariate values for BILAT_0
+  ds.final$C_BILAT_0[sel.pats] <- ds.final$BILAT_0[sel.pats] - 
+    mean(ds.final$BILAT_0[sel.pats])
+}
+```
+
+The previous meta-analysis model can then be extended as follows:
+
+```{r}
+fit2b.em <- glm(POUTCOME ~ 0 + SID + # trial-specific intercept term
+                  TREAT + # common treatment effect
+                  AGE:SID + # trial-specific term for AGE
+                  GENDER:SID + # trial-specific term for GENDER
+                  BILAT_0:SID + # trial-specific term for BILAT_0
+                  C_BILAT_0:TREAT +  # common within-trial interaction
+                  TREAT:MEAN_BILAT_0 , # beteen-trial interaction
+               data = ds.final, 
+               family = binomial(link="log"))
+summary(fit2b.em)
+```
+
+As you can see, we have replaced the variable `BILAT_0` by the centred vesion `C_BILAT_0`, and have included an additional study-level interaction `TREAT:MEAN_BILAT_0`. The estimated within-trial covariate-interaction is then given by the regression coefficient for `TREAT:C_BILAT_0`.
+
+```{r,message=F,warning=F,echo=F,eval=T}
+results.em[4, 3] <- coefficients(fit2b.em)["TREAT:C_BILAT_0"]
+results.em[4, 4] <- 2 * (1 - pnorm(abs(coefficients(fit2b.em)["TREAT:C_BILAT_0"] /sqrt(diag(vcov(fit2b.em))["TREAT:C_BILAT_0"]) )))
+kable(results.em[1:4,])
+```
+
+We can extend aforementioned meta-analysis model to allow for random treatment effects:
+
+```{r}
+fit3b.em <- glmer(POUTCOME ~ 0 + SID + # trial-specific intercept term
+                    TREAT + (0 + TREAT|SID) + # random treatment effect
+                    AGE:SID + # trial-specific term for AGE
+                    GENDER:SID + # trial-specific term for GENDER
+                    BILAT_0:SID + # trial-specific term for BILAT_0
+                    C_BILAT_0:TREAT + # common within-trial interaction
+                    TREAT:MEAN_BILAT_0, # between-trial interaction
+                data = ds.final, family = binomial(link="log"))
+summary(fit3b.em)
+```
+
+An overview of all estimates is given below:
+
+```{r,message=F,warning=F,echo=F,eval=T}
+results.em[5, 3] <- fixef(fit3b.em)["TREAT:C_BILAT_0"]
+results.em[5, 4] <- 2 * (1 - pnorm(abs(fixef(fit3b.em)["TREAT:C_BILAT_0"] /sqrt(vcov(fit3b.em)["TREAT:C_BILAT_0","TREAT:C_BILAT_0"]) )))
+kable(results.em[1:5,])
+```
+
+**Question `r qc()`.**  General question: Sometimes, a one-stage meta-analysis is not possible or impractical, but a two-stage analysis is. When do you think this is the case?
+
+`r if(show.text){paste("*Answer: Sometimes, researchers refuse to physically share data, (for instance, for legal reasons) but are still prepared to perform the first stage of the two-stage analysis at their own institution. They can then share these estimates (that is, the aggregate data) with you and you can then perform the second stage of the analysis. Alternatively, some researchers who published a study might not respond to your request to share IPD or refuse it outright. In a two-stage meta-analysis you could then include the aggregate data they reported in their article in the second stage of the analysis. Doing so in a one-stage analysis would be impractical, unless you perform a Bayesian analysis.*", sep="")}`
+
+## References
